@@ -393,7 +393,7 @@ exports.oraexectrans = async (queries, poolAlias = 'default', options = {}) => {
             const { query: sql, parameters: param = {} } = queries[i]
             if (!sql) throw new Error(`Query at index ${i} is missing 'query' field`)
 
-            const qid = _logQuery(`[TXID:${txid}] ${sql}`, param)
+            const qid = _logQuery(sql, param)
             const qStartTime = Date.now()
 
             const res = await connection.execute(sql, param, execOptions)
