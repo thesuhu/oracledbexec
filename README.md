@@ -11,17 +11,17 @@ Running Oracle queries made easier.
 npm install oracledbexec --save
 ```
 
-## What's New in v2.0.0
+## What's New in v2.1.0
 
-Version `2.0.0` promotes `oracledbexec` to a production-ready release with a stronger runtime model, safer logging defaults, and better debugging support.
+Version `2.1.0` improves production diagnostics with live slow-query tracking, richer pool events, and more reliable caller attribution.
 
-- **Async/Await Architecture**: the core execution flow now uses async/await consistently for cleaner non-blocking query handling.
-- **Smart Threading**: `UV_THREADPOOL_SIZE` is automatically aligned with `POOL_MAX` at startup to reduce Oracle driver bottlenecks.
-- **Multi-Pool Support**: multiple Oracle pools can be initialized and managed in parallel through pool aliases.
-- **High Observability**: query logs include `QID`/`TXID` correlation IDs, caller tracing, and execution timing in development mode.
-- **Safer Configuration**: numeric environment variables are validated with `safeParseInt` to avoid bad `0`, negative, or invalid values.
-- **Guaranteed Cleanup**: connections are always closed in `finally` blocks, including failure paths.
-- **Monitoring & Packaging**: built-in pool monitoring supports aliased pools, and the published package is limited to runtime files needed on npm.
+- **Live Slow-Query Tracking**: opt-in tracking through `ORACLE_QUERY_TRACKING=true` and `getSlowQueries(thresholdMs?)` exposes currently running queries.
+- **Actionable Queue Timeouts**: `queue_timeout` events include a `heldBy` snapshot with query IDs, caller locations, SQL, and bind parameters.
+- **Pool Event Callback**: `initialize(config?, onPoolEvent?)` reports pool lifecycle, health, recovery, and queue-timeout events.
+- **Reliable Observability**: caller locations are captured before asynchronous work begins, and 8-character `QID`/`TXID` values reduce collisions.
+- **Cross-Pool Isolation**: in-flight queries are tracked independently for each pool alias.
+- **Fetch Conversion**: `setFetchAsString(types)` configures Oracle types such as CLOB/NCLOB to be returned as strings.
+- **Monitoring Fixes**: pool usage statistics and manual-transaction attribution now reflect the correct pool and connection state.
 
 ## Environment Variables
 
@@ -545,7 +545,7 @@ THIN_MODE=true
 
 ### Error Handling & Observability (Improved)
 
-All functions throw errors that should be caught. Version `2.0.0` adds advanced diagnostics:
+All functions throw errors that should be caught. Version `2.1.0` includes advanced diagnostics:
 
 - **Caller Tracing**: Error logs show exactly which file and line number in your application triggered the error.
 - **Short SQL Snippets**: Error logs include a compact SQL preview to help identify the failing statement without printing long query text.
@@ -610,7 +610,7 @@ When `ORACLE_POOL_MONITORING=true`:
 
 ## Testing
 
-Version `2.0.0` includes a Jest-based test suite covering:
+Version `2.1.0` includes a Jest-based test suite covering:
 
 - single query execution
 - custom execution options
@@ -622,7 +622,7 @@ Version `2.0.0` includes a Jest-based test suite covering:
 - in-flight slow query tracking and cleanup
 - `NJS-040` queue timeout with `heldBy` culprit snapshot and pool event callback
 
-Release verification for `v2.0.0` targets `7/7` passing tests, including decimal handling checks such as `.5` versus `0.5`, plus clean process exit after the suite finishes.
+Release verification for `v2.1.0` targets all 16 tests passing, plus a clean process exit after the suite finishes.
 
 ## Changelog
 

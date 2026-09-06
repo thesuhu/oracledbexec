@@ -1,7 +1,7 @@
 /**
  * UNIT TEST FOR ORACLEDBEXEC
  * Using Jest framework for professional testing.
- * Standardizing on v2.0.0 features.
+ * Standardizing on v2.1.0 features.
  */
 
 require('dotenv').config()
@@ -11,7 +11,7 @@ const oracledb = require('oracledb')
 // Increase timeout as Oracle connections can be slow
 jest.setTimeout(30000)
 
-describe('OracleDBExec Library Tests (v2.0.0)', () => {
+describe('OracleDBExec Library Tests (v2.1.0)', () => {
 
     // Initialize pool before all tests
     beforeAll(async () => {
