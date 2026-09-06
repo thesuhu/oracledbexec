@@ -95,4 +95,245 @@ describe('OracleDBExec Library Tests (v2.0.0)', () => {
             expect(stats !== undefined).toBe(true)
         })
     })
+
+    describe('Slow Query Tracking & Pool Events (v2.1.0)', () => {
+        test('getSlowQueries returns an array when ORACLE_QUERY_TRACKING is disabled (default)', () => {
+            const result = db.getSlowQueries(0)
+            expect(Array.isArray(result)).toBe(true)
+        })
+
+        test('tracks an in-flight query and clears it on completion when ORACLE_QUERY_TRACKING=true', async () => {
+            process.env.ORACLE_QUERY_TRACKING = 'true'
+            jest.resetModules()
+            const dbTracked = require('./oracledbexec')
+            await dbTracked.initialize({ poolAlias: 'tracked_pool', poolMax: 2, poolMin: 1 })
+
+            try {
+                // Pure PL/SQL busy-wait spin loop using DBMS_UTILITY.GET_TIME (centiseconds,
+                // monotonic, granted to PUBLIC everywhere) — avoids SYSTIMESTAMP/timezone
+                // comparison pitfalls and doesn't depend on DBMS_SESSION.SLEEP being available.
+                const slowSql = "/* SPINWAIT_HOLDER */ DECLARE v_start PLS_INTEGER := DBMS_UTILITY.GET_TIME; BEGIN LOOP EXIT WHEN DBMS_UTILITY.GET_TIME - v_start > 200; END LOOP; END;"
+
+                let match
+                await Promise.all([
+                    dbTracked.oraexec(slowSql, {}, 'tracked_pool'),
+                    (async () => {
+                        // Give the query a moment to register as in-flight
+                        await new Promise(resolve => setTimeout(resolve, 300))
+                        const inFlight = dbTracked.getSlowQueries(0)
+                        match = inFlight.find(q => q.poolAlias === 'tracked_pool' && q.sql.includes('SPINWAIT_HOLDER'))
+                    })()
+                ])
+
+                expect(match).toBeDefined()
+                // oraexec() resolves _getCaller() synchronously at its very top, before any
+                // await, so it reflects this test's own call site (line 119 above) rather than
+                // something deeper in oracledbexec.js's internals — should reliably be this
+                // file, not the 'unknown' fallback.
+                expect(typeof match.caller).toBe('string')
+                expect(match.caller).not.toBe('unknown')
+                expect(match.caller).toContain('oracledbexec.test.js')
+
+                const afterCompletion = dbTracked.getSlowQueries(0)
+                expect(afterCompletion.some(q => q.queryId === match.queryId)).toBe(false)
+            } finally {
+                await dbTracked.close('tracked_pool')
+                delete process.env.ORACLE_QUERY_TRACKING
+            }
+        })
+
+        test('records NJS-040 queue timeout with a heldBy snapshot of the connection-holding query', async () => {
+            process.env.ORACLE_QUERY_TRACKING = 'true'
+            jest.resetModules()
+            const dbQueue = require('./oracledbexec')
+
+            const events = []
+            await dbQueue.initialize(
+                { poolAlias: 'queue_pool', poolMax: 1, poolMin: 1, poolIncrement: 0, queueTimeout: 1000, queueMax: 10 },
+                (evt) => events.push(evt)
+            )
+
+            try {
+                // Holds the pool's only connection for 3s (DBMS_UTILITY.GET_TIME spin-wait, see above).
+                const holderSql = "/* SPINWAIT_HOLDER */ DECLARE v_start PLS_INTEGER := DBMS_UTILITY.GET_TIME; BEGIN LOOP EXIT WHEN DBMS_UTILITY.GET_TIME - v_start > 300; END LOOP; END;"
+                const holder = dbQueue.oraexec(holderSql, {}, 'queue_pool')
+
+                // Give the holder time to actually grab the connection.
+                await new Promise(resolve => setTimeout(resolve, 200))
+
+                // Should queue for 1s (queueTimeout) then reject with NJS-040, well before the holder finishes.
+                await expect(dbQueue.oraexec('SELECT 1 FROM DUAL', {}, 'queue_pool')).rejects.toThrow(/NJS-040/)
+
+                const queueEvent = events.find(e => e.event === 'queue_timeout')
+                expect(queueEvent).toBeDefined()
+                // caller resolved synchronously at the top of oraexec(), before any
+                // await, so it should reliably be this file — not the 'unknown' fallback.
+                expect(queueEvent.caller).not.toBe('unknown')
+                expect(queueEvent.caller).toContain('oracledbexec.test.js')
+                expect(queueEvent.heldBy.length).toBeGreaterThan(0)
+                expect(queueEvent.heldBy[0].sql).toContain('SPINWAIT_HOLDER')
+                expect(queueEvent.heldBy[0].caller).not.toBe('unknown')
+                expect(queueEvent.heldBy[0].caller).toContain('oracledbexec.test.js')
+
+                await holder
+            } finally {
+                await dbQueue.close('queue_pool')
+                delete process.env.ORACLE_QUERY_TRACKING
+            }
+        })
+    })
+
+    describe('Caller Resolution (v2.1.0 fix — resolved before any await, not deep in internals)', () => {
+        test('oraexectrans() reports the same caller for every query in the transaction', async () => {
+            process.env.ORACLE_QUERY_TRACKING = 'true'
+            jest.resetModules()
+            const dbTx = require('./oracledbexec')
+            await dbTx.initialize({ poolAlias: 'caller_tx_pool', poolMax: 2, poolMin: 1 })
+
+            try {
+                const slowSql = "/* CALLER_TX_HOLDER */ DECLARE v_start PLS_INTEGER := DBMS_UTILITY.GET_TIME; BEGIN LOOP EXIT WHEN DBMS_UTILITY.GET_TIME - v_start > 200; END LOOP; END;"
+
+                let match
+                await Promise.all([
+                    dbTx.oraexectrans([
+                        { query: 'SELECT 1 as val FROM DUAL' },
+                        { query: slowSql }, // <- the one we expect to catch in-flight below
+                        { query: 'SELECT 2 as val FROM DUAL' }
+                    ], 'caller_tx_pool'),
+                    (async () => {
+                        await new Promise(resolve => setTimeout(resolve, 100))
+                        const inFlight = dbTx.getSlowQueries(0)
+                        match = inFlight.find(q => q.poolAlias === 'caller_tx_pool' && q.sql.includes('CALLER_TX_HOLDER'))
+                    })()
+                ])
+
+                expect(match).toBeDefined()
+                // caller is resolved once, synchronously, at the top of oraexectrans() —
+                // the line that called oraexectrans() (this file), not somewhere inside
+                // the per-query loop in oracledbexec.js.
+                expect(match.caller).not.toBe('unknown')
+                expect(match.caller).toContain('oracledbexec.test.js')
+            } finally {
+                await dbTx.close('caller_tx_pool')
+                delete process.env.ORACLE_QUERY_TRACKING
+            }
+        })
+
+        test('exectrans() (manual transaction) reports the real call-site caller', async () => {
+            process.env.ORACLE_QUERY_TRACKING = 'true'
+            jest.resetModules()
+            const dbManual = require('./oracledbexec')
+            await dbManual.initialize({ poolAlias: 'caller_manual_pool', poolMax: 1, poolMin: 1 })
+
+            const slowSql = "/* CALLER_MANUAL_HOLDER */ DECLARE v_start PLS_INTEGER := DBMS_UTILITY.GET_TIME; BEGIN LOOP EXIT WHEN DBMS_UTILITY.GET_TIME - v_start > 200; END LOOP; END;"
+            let conn
+            try {
+                conn = await dbManual.begintrans('caller_manual_pool')
+
+                let match
+                await Promise.all([
+                    dbManual.exectrans(conn, slowSql),
+                    (async () => {
+                        await new Promise(resolve => setTimeout(resolve, 100))
+                        const inFlight = dbManual.getSlowQueries(0)
+                        match = inFlight.find(q => q.poolAlias === 'caller_manual_pool' && q.sql.includes('CALLER_MANUAL_HOLDER'))
+                    })()
+                ])
+
+                expect(match).toBeDefined()
+                expect(match.caller).not.toBe('unknown')
+                expect(match.caller).toContain('oracledbexec.test.js')
+
+                await dbManual.committrans(conn)
+                conn = null // committrans already closed it
+            } finally {
+                if (conn) await dbManual.rollbacktrans(conn).catch(() => {})
+                await dbManual.close('caller_manual_pool')
+                delete process.env.ORACLE_QUERY_TRACKING
+            }
+        })
+
+        test('begintrans() reports the real call-site caller on a queue_timeout', async () => {
+            jest.resetModules()
+            const dbBegin = require('./oracledbexec')
+
+            const events = []
+            await dbBegin.initialize(
+                { poolAlias: 'caller_begin_pool', poolMax: 1, poolMin: 1, poolIncrement: 0, queueTimeout: 1000, queueMax: 10 },
+                (evt) => events.push(evt)
+            )
+
+            try {
+                const holderSql = "/* CALLER_BEGIN_HOLDER */ DECLARE v_start PLS_INTEGER := DBMS_UTILITY.GET_TIME; BEGIN LOOP EXIT WHEN DBMS_UTILITY.GET_TIME - v_start > 300; END LOOP; END;"
+                const holder = dbBegin.oraexec(holderSql, {}, 'caller_begin_pool')
+
+                await new Promise(resolve => setTimeout(resolve, 200))
+
+                // Pool's only connection is held — this should queue, wait 1s, and
+                // fail with NJS-040, well before the holder finishes.
+                await expect(dbBegin.begintrans('caller_begin_pool')).rejects.toThrow(/NJS-040/)
+
+                const queueEvent = events.find(e => e.event === 'queue_timeout')
+                expect(queueEvent).toBeDefined()
+                expect(queueEvent.caller).not.toBe('unknown')
+                expect(queueEvent.caller).toContain('oracledbexec.test.js')
+
+                await holder
+            } finally {
+                await dbBegin.close('caller_begin_pool')
+            }
+        })
+
+        // colorconsole captures `const log = console.log` once at require time (before any
+        // spy exists), so jest.spyOn(console, 'log') never intercepts it — that captured
+        // reference stays bound to the original function. Spying on process.stdout.write
+        // works instead, since Node's console.log resolves it live on every call.
+        test('initialize() logs the real call-site caller on failure', async () => {
+            const writeSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true)
+            try {
+                await expect(db.initialize({ user: '', password: '', connectString: '' })).rejects.toThrow()
+
+                const logged = writeSpy.mock.calls.map(args => args[0]).join('\n')
+                expect(logged).toContain('Initialization failed at')
+                expect(logged).toContain('oracledbexec.test.js')
+            } finally {
+                writeSpy.mockRestore()
+            }
+        })
+
+        test('committrans() logs the real call-site caller on failure', async () => {
+            const writeSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true)
+            // Fake connection — no live DB needed, just needs .commit() to reject and .close() to resolve.
+            const fakeConnection = {
+                commit: () => Promise.reject(new Error('simulated commit failure')),
+                close: () => Promise.resolve()
+            }
+            try {
+                await expect(db.committrans(fakeConnection)).rejects.toThrow('simulated commit failure')
+
+                const logged = writeSpy.mock.calls.map(args => args[0]).join('\n')
+                expect(logged).toContain('Commit error at')
+                expect(logged).toContain('oracledbexec.test.js')
+            } finally {
+                writeSpy.mockRestore()
+            }
+        })
+
+        test('rollbacktrans() logs the real call-site caller on failure', async () => {
+            const writeSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true)
+            const fakeConnection = {
+                rollback: () => Promise.reject(new Error('simulated rollback failure')),
+                close: () => Promise.resolve()
+            }
+            try {
+                await expect(db.rollbacktrans(fakeConnection)).rejects.toThrow('simulated rollback failure')
+
+                const logged = writeSpy.mock.calls.map(args => args[0]).join('\n')
+                expect(logged).toContain('Rollback error at')
+                expect(logged).toContain('oracledbexec.test.js')
+            } finally {
+                writeSpy.mockRestore()
+            }
+        })
+    })
 })
