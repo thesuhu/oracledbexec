@@ -1,6 +1,6 @@
 {
   "name": "oracledbexec",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Running Oracle queries made easier",
   "main": "oracledbexec.js",
   "files": [
@@ -28,7 +28,7 @@
   "dependencies": {
     "@thesuhu/colorconsole": "^1.0.5",
     "bind-sql-string": "^1.2.2",
-    "oracledb": "^6.7.1"
+    "oracledb": "^6.10.0"
   },
   "devDependencies": {
     "dotenv": "^17.4.2",

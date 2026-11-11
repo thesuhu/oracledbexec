@@ -626,6 +626,9 @@ Release verification for `v2.1.0` targets all 16 tests passing, plus a clean pro
 
 ## Changelog
 
+### Version 2.1.1
+- ⬆️ **Dependency Update**: upgraded `oracledb` to `^6.10.0` (`6.7.1` was deprecated on npm).
+
 ### Version 2.1.0
 - ✅ **Slow Query Tracking**: new `getSlowQueries(thresholdMs?)` — a **live** view of in-flight queries running longer than threshold (default `60000`ms), recomputed from "now" on every call. Opt-in via `ORACLE_QUERY_TRACKING=true`, disabled by default (returns `[]`).
 - ✅ **`heldBy` Culprit Snapshot on `queue_timeout`**: the pool event callback's `queue_timeout` event carries `heldBy` — a snapshot of up to 5 queries actually holding connections at the moment of failure, delivered in real time so you can find the offending code without a separate lookup. Populated only when `ORACLE_QUERY_TRACKING` was on at the time. There's no separate pull/history API for past incidents — `getSlowQueries()` is the only tracking query surface, and it's intentionally live-only.

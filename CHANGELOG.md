@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 2.1.1 (November 2026) - Dependency Update
+
+### 🔧 Maintenance
+- ⬆️ **Upgrade `oracledb` to `^6.10.0`** - previous `6.7.1` was deprecated on npm. No API changes in this library.
+
 ## Version 2.1.0 (August 2026) - Slow Query Tracking
 
 ### 🚀 New Feature
